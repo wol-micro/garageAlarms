@@ -16,6 +16,7 @@ uint32_t g_alarmCount  = 0;
 int64_t  g_lastAlarm   = 0;
 int64_t  g_lastMotion  = 0;
 int16_t  g_hbDay       = -1;
+uint32_t g_resetHist[RESET_SLOTS] = {0};
 
 void persistSubs()
 {
@@ -45,6 +46,9 @@ void begin()
 
     g_bootCount = prefs.getUInt("boots", 0) + 1;
     prefs.putUInt("boots", g_bootCount);
+
+    if (prefs.getBytes("rhist", g_resetHist, sizeof(g_resetHist)) != sizeof(g_resetHist))
+        memset(g_resetHist, 0, sizeof(g_resetHist));
 
     // The owner is always a subscriber. Without this, a fresh flash has nobody to alert.
     if (OWNER_CHAT_ID != 0 && !isSubscribed(OWNER_CHAT_ID))
@@ -114,6 +118,19 @@ bool isMuted()
     if (now < 1700000000)   // clock not synced yet; fail open, an alarm beats a silent box
         return false;
     return (int64_t)now < g_muteUntil;
+}
+
+void noteResetReason(uint8_t reason)
+{
+    if (reason >= RESET_SLOTS)
+        reason = 0;
+    g_resetHist[reason]++;
+    prefs.putBytes("rhist", g_resetHist, sizeof(g_resetHist));
+}
+
+uint32_t resetReasonCount(uint8_t reason)
+{
+    return reason < RESET_SLOTS ? g_resetHist[reason] : 0;
 }
 
 uint32_t bootCount()  { return g_bootCount; }

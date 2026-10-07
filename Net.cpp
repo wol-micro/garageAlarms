@@ -149,6 +149,30 @@ bool wasUnexpectedReset()
     }
 }
 
+uint8_t resetReasonCode() { return (uint8_t)g_resetReason; }
+
+const char *resetReasonName(uint8_t code)
+{
+    switch ((esp_reset_reason_t)code) {
+        case ESP_RST_POWERON:    return "питание";
+        case ESP_RST_EXT:        return "RESET";
+        case ESP_RST_SW:         return "софт";
+        case ESP_RST_PANIC:      return "паника";
+        case ESP_RST_INT_WDT:    return "int-WDT";
+        case ESP_RST_TASK_WDT:   return "task-WDT";
+        case ESP_RST_WDT:        return "WDT";
+        case ESP_RST_BROWNOUT:   return "brownout";
+        case ESP_RST_PWR_GLITCH: return "глитч";
+        case ESP_RST_CPU_LOCKUP: return "lockup";
+        case ESP_RST_DEEPSLEEP:  return "сон";
+        case ESP_RST_USB:        return "USB";
+        case ESP_RST_JTAG:       return "JTAG";
+        case ESP_RST_EFUSE:      return "eFuse";
+        case ESP_RST_SDIO:       return "SDIO";
+        default:                 return "?";
+    }
+}
+
 const char *resetReasonText()
 {
     switch (g_resetReason) {

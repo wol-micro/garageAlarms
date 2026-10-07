@@ -74,6 +74,10 @@
 // can never wedge loop() long enough to trip the task watchdog.
 #define TELEGRAM_READ_TIMEOUT     5000   // ms without progress before we drop the socket
 #define TELEGRAM_MAX_HEADER_LINES 32
+#define TELEGRAM_REPLY_IDLE_MS    1500   // quiet gap that ends a reply body
+// 400 ms was too tight: on a -87 dBm link the body can arrive in pieces with longer gaps, so
+// a delivered message read as unconfirmed and the queue retried it — a duplicate alarm. The
+// overall TELEGRAM_READ_TIMEOUT still bounds the wait, so this cannot wedge the loop.
 
 static const char telegram_cert[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
@@ -118,6 +122,11 @@ public:
     // returns
     //    true if no error occurred
     bool begin(void);
+
+    // PATCHED (garageAlarms): a caller doing its own confirmed sends must not transmit while
+    // a getUpdates reply is still outstanding — on this library's single connection it would
+    // read that reply as the answer to its own request.
+    inline bool isWaitingReply() const { return m_waitingReply; }
 
     // reset the connection between ESP8266 and the telegram server (ex. when connection was lost)
     // returns

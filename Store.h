@@ -38,6 +38,12 @@ int64_t muteUntil();
 void    setMuteUntil(int64_t epoch);
 bool    isMuted();
 
+// Reset-reason histogram. A bare reboot counter says "it restarted 16600 times" without
+// saying why; only the distribution distinguishes a brownout from a firmware hang.
+#define RESET_SLOTS 16
+void     noteResetReason(uint8_t reason);
+uint32_t resetReasonCount(uint8_t reason);
+
 // --- counters and stats ---
 uint32_t bootCount();
 uint32_t alarmCount();

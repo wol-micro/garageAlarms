@@ -26,12 +26,42 @@ The target is an ESP32-S3 (N16R8, 16 MB flash). Plain `esp32:esp32:esp32` is **n
 supported: the code relies on `INPUT_PULLDOWN` and on the S3's USB/JTAG reset reasons.
 `CDCOnBoot=cdc` is required, or `Serial` goes to the UART pins and nothing shows up over USB.
 
-Verified against ESP32 core **3.3.11** and ArduinoJson **7.4.2**. There are no tests; the
-compile is the check.
+Verified against ESP32 core **3.3.11** and ArduinoJson **7.4.2**. Current size: ~53% of the
+1.9 MB app partition.
 
 `secrets.h` is gitignored. Copy `secrets.example.h` to `secrets.h` and fill it in (WiFi
 credentials, bot token, `OWNER_CHAT_ID`, `SUBSCRIBE_PIN`), or the build fails on the first
 include.
+
+## Tests
+
+```bash
+./test/run.sh          # builds and runs on the host, no board needed
+```
+
+`test/` stages the hardware-independent sources into a scratch directory, overlays
+`test/stubs/` (Arduino, Preferences/NVS, WiFi/Net, the Telegram client) and compiles with
+plain g++. A fake clock and fake pin levels are what make debounce windows, cooldowns, PIR
+warm-up, mute expiry and retry backoff testable at all — on hardware most of these take hours
+to observe.
+
+The bot stub models **"written to the transport"** and **"confirmed by Telegram"** as separate
+things. An earlier version returned true for the act of sending, which encoded the same wrong
+assumption the production code had, and so could never have caught the bug where alarms were
+dropped from the queue without being delivered. A stub built on your belief can only confirm
+your belief.
+
+Covered: `DebouncedInput` (glitch rejection, cooldown, warm-up not arming the cooldown, a
+contact already closed at boot), the mute window (expiry, persistence, fail-open on an
+unsynced clock), what mute may silence, the `/mute` argument parser, the mute screen wording,
+and `Notifier` delivery (offline retention, exactly-once, retry without duplicates, an
+unconfirmed send never counting as delivery, queue survival across a reboot).
+
+Not covered: anything needing the real radio or transport — `Net`, `BotUI` dispatch, and the
+vendored library's HTTP parsing.
+
+The stub for `secrets.h` is checked in as `test/stubs/secrets.h.in`, because `.gitignore`
+excludes any file named `secrets.h` at any depth.
 
 ## Layout
 
@@ -48,6 +78,7 @@ include.
 | `BotUI.*` | commands, inline menus, native `/` command list |
 | `Util.*` | time/duration formatting (Russian), HTML escaping |
 | `src/AsyncTelegram2/` | **vendored and patched** copy of the library — see below |
+| `test/` | host-side test suite and hardware stubs |
 
 `src/` is compiled recursively by the Arduino build, which is why the vendored library lives
 there. Nothing includes `<AsyncTelegram2.h>` with angle brackets, so the copy in
@@ -73,6 +104,14 @@ back a reboot loop and duplicate deliveries:
 - **`sendCommand()` non-blocking return** — discarded the write result and always returned
   `false`, so a retrying caller (the `Notifier`) delivered every message many times. It now
   returns whether the request was fully written to a live connection.
+- **`sendCommand()` blocking reply read** — drained only the bytes that had already arrived,
+  so on a slow link `available()` could go false mid-body and a delivered message was read as
+  a failure. It now reads until the verdict appears or the stream stalls.
+- **`sendCommand()` stale input** — `getUpdates()` and `sendMessage()` share one TCP
+  connection, so leftovers from an earlier reply sat in the receive buffer and were read as
+  the answer to the next request. A confirmed send therefore reported failure and the retry
+  delivered a duplicate alarm. The socket is drained before a blocking send; the first run on
+  hardware logged 400 stale bytes.
 - **ArduinoJson 7** — several call sites still used `DynamicJsonDocument` /
   `StaticJsonDocument`, removed in v7. Added a `JSON_DOC_NAMED` compat macro.
 - **`editMessage()`** — never sent `parse_mode`, so HTML rendered as literal tags when a
@@ -102,8 +141,12 @@ a cut wire reads as quiet rather than as an alarm:
 - `PIN_ALARM` (17): `INPUT_PULLUP`, active **LOW**
 - `PIN_MOTION` (18): `INPUT_PULLDOWN`, active **HIGH**
 
-**Delivery is a persisted queue.** `Notifier` removes an item only after `sendTo()` reports
-success, retries with exponential backoff (up to `NOTIFY_MAX_ATTEMPTS`), paces sends by
+**Delivery is a persisted queue, and "sent" means confirmed.** `Notifier` removes an item
+only once Telegram has answered `"ok":true` — writing the bytes is not delivery, because on a
+weak link the TLS write succeeds while the request never arrives, and treating that as success
+loses the alarm without a trace. Sends are therefore blocking, and `Notifier` holds off while
+a `getUpdates` reply is outstanding (`isWaitingReply()`), since on the shared connection it
+would otherwise read that reply as its own answer. It retries with exponential backoff (up to `NOTIFY_MAX_ATTEMPTS`), paces sends by
 `NOTIFY_MIN_SEND_GAP_MS`, and stores the queue in NVS — so an alarm raised seconds before a
 brownout is still delivered after the reboot. When full, it evicts the oldest non-critical
 item first. Messages that sat in the queue are rendered with a "late" marker. The original
@@ -125,8 +168,22 @@ recreates the flood it is meant to warn about. `esp_reset_reason()` is reported 
 and in `/status` — that is the fastest way to tell a brownout from a firmware hang. A daily
 heartbeat (`HEARTBEAT_HOUR`) makes silence from the bot meaningful.
 
-**Mute never silences an alarm.** `Events::isCritical()` decides; critical events bypass the
-mute window at enqueue time.
+**Mute never silences an alarm, nor `/test`.** `Events::bypassesMute()` decides, and it is
+deliberately wider than `isCritical()`: a delivery check that is itself silently dropped makes
+the bot look broken at the exact moment someone is trying to find out whether it works.
+
+**`/mute 0` means off.** `Util::parseMuteHours` distinguishes "no argument" from "zero";
+collapsing them turned the most natural way to disable mute into a command that re-armed it
+for four hours. Anything unparseable falls back to the default window rather than to silence.
+The mute screen text lives in `Events::muteScreen` so a test can render it — it used to append
+"motion notifications do not arrive" unconditionally, so switching mute off still claimed it
+was on.
+
+**Diagnostics.** `/status` and the boot log carry the raw pin levels and a reset-reason
+histogram kept in NVS; incoming commands, mute changes, events suppressed by mute and the
+outgoing Telegram payload are logged to Serial. The payload dump is what established that no
+request carries `disable_notification`, so a message arriving without a sound is a Telegram
+client setting rather than something the firmware asks for.
 
 ### Known limitation
 

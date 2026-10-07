@@ -80,9 +80,11 @@ void begin(AsyncTelegram2 *bot)
 // Returns true if the item was actually queued.
 static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts)
 {
-    // Mute silences chatter, never a real alarm.
-    if (Store::isMuted() && !Events::isCritical(type))
+    // Mute silences chatter, never a real alarm and never an explicit delivery check.
+    if (Store::isMuted() && !Events::bypassesMute(type)) {
+        Serial.printf("[notify] %s suppressed by mute\n", Events::name(type));
         return false;
+    }
 
     if (!makeRoom())
         return false;
@@ -99,8 +101,10 @@ static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts)
 
 void enqueue(int64_t chatId, EventType type, int64_t ts)
 {
-    if (enqueueNoPersist(chatId, type, ts))
+    if (enqueueNoPersist(chatId, type, ts)) {
         persist();
+        Serial.printf("[notify] queued %s for %lld\n", Events::name(type), (long long)chatId);
+    }
 }
 
 void broadcast(EventType type, int64_t ts)
@@ -121,6 +125,8 @@ void loop()
         return;
     if (!Net::isOnline())
         return;
+    if (g_bot->isWaitingReply())
+        return;   // a getUpdates reply is outstanding; ours would read its response instead
 
     const uint32_t now = millis();
     if (now - g_lastSendMs < NOTIFY_MIN_SEND_GAP_MS)
@@ -144,7 +150,13 @@ void loop()
     const String body = Events::render((EventType)it.type, it.eventTs, late);
 
     g_lastSendMs = millis();
-    const bool ok = g_bot->sendTo(it.chatId, body.c_str());
+
+    // Confirmed send. Writing the bytes is not delivery: on a weak link the TLS write
+    // succeeds into the socket buffer while the request never reaches Telegram, and treating
+    // that as success deletes the alert without a trace. We wait for "ok":true instead.
+    TBMessage out;
+    out.chatId = it.chatId;
+    const bool ok = g_bot->sendMessage(out, body.c_str(), nullptr, true);
 
     if (ok) {
         g_delivered++;
@@ -154,6 +166,8 @@ void loop()
         return;
     }
 
+    Serial.printf("[notify] %s to %lld not confirmed (attempt %u), will retry\n",
+                  Events::name((EventType)it.type), (long long)it.chatId, it.attempts + 1);
     it.attempts++;
     if (it.attempts >= NOTIFY_MAX_ATTEMPTS) {
         Serial.printf("[notify] giving up on %s for %lld after %u attempts\n",

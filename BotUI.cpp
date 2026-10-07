@@ -64,7 +64,7 @@ String kbMute()
     kb.addButton("4 ч",  "k4", KeyboardButtonQuery);
     kb.addButton("8 ч",  "k8", KeyboardButtonQuery);
     kb.addRow();
-    kb.addButton("🔔 Включить звук", "k0", KeyboardButtonQuery);
+    kb.addButton("🔔 Снять тишину", "k0", KeyboardButtonQuery);
     kb.addRow();
     kb.addButton("← Назад", "m", KeyboardButtonQuery);
     return kb.getJSON();
@@ -100,12 +100,28 @@ String txtStatus()
     s += "🕒 Время: " + Util::fmtTime((int64_t)time(nullptr), false) + "\n";
     s += "⏱ Аптайм: " + Util::fmtUptime(Net::uptimeMs()) + "\n";
     s += "🔁 Перезагрузок: " + String(Store::bootCount()) + "\n";
-    s += "   последняя: <i>" + String(Net::resetReasonText()) + "</i>\n\n";
+    s += "   последняя: <i>" + String(Net::resetReasonText()) + "</i>\n";
+
+    // The distribution is the diagnostic: a bare count cannot tell a flaky power supply
+    // from a firmware hang.
+    String hist;
+    for (uint8_t i = 0; i < RESET_SLOTS; i++) {
+        uint32_t n = Store::resetReasonCount(i);
+        if (!n) continue;
+        if (hist.length()) hist += ", ";
+        hist += String(Net::resetReasonName(i)) + " " + String(n);
+    }
+    if (hist.length())
+        s += "   причины: <code>" + hist + "</code>\n";
+    s += "\n";
 
     s += "🚨 Тревог всего: " + String(Store::alarmCount()) + "\n";
     s += "   последняя: " + Util::fmtAgo(Store::lastAlarmTs()) + "\n";
     s += "👁 Движение: " + Util::fmtAgo(Store::lastMotionTs()) + "\n\n";
 
+    s += "🔌 Уровни: GPIO" + String(PIN_ALARM) + "=" + String(digitalRead(PIN_ALARM))
+       + " (норма 1), GPIO" + String(PIN_MOTION) + "=" + String(digitalRead(PIN_MOTION))
+       + " (норма 0)\n";
     s += "🔌 Датчики: дым — ";
     s += appAlarmActive() ? "<b>СРАБОТАЛ</b>" : "норма";
     s += ", движение — ";
@@ -163,13 +179,7 @@ String txtWho()
 
 String txtMuted()
 {
-    String s = "🔕 <b>Режим тишины</b>\n\n";
-    if (Store::isMuted())
-        s += "Сейчас: тишина до <b>" + Util::fmtShort(Store::muteUntil()) + "</b>\n\n";
-    else
-        s += "Сейчас: уведомления включены\n\n";
-    s += "<i>Сообщения о движении не приходят. Тревога о дыме — приходит всегда.</i>";
-    return s;
+    return Events::muteScreen(Store::isMuted(), Store::muteUntil());
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -187,16 +197,17 @@ void show(const TBMessage &msg, const String &text, const String &kb)
 
 void applyMute(const TBMessage &msg, uint32_t hours)
 {
+    Serial.printf("[bot] mute request: %u h\n", hours);
     if (hours == 0) {
         Store::setMuteUntil(0);
+        Serial.println("[bot] mute OFF");
     } else {
         if (!Util::clockReady()) {
             show(msg, "⚠️ Время ещё не синхронизировано, режим тишины недоступен.", kbJustBack());
             return;
         }
-        if (hours > MAX_MUTE_HOURS)
-            hours = MAX_MUTE_HOURS;
         Store::setMuteUntil((int64_t)time(nullptr) + (int64_t)hours * 3600);
+        Serial.printf("[bot] mute ON until epoch %lld\n", (long long)Store::muteUntil());
     }
     show(msg, txtMuted(), kbMute());
 }
@@ -215,6 +226,7 @@ String senderName(const TBMessage &msg)
 void handleCallback(const TBMessage &msg)
 {
     const String &d = msg.callbackQueryData;
+    Serial.printf("[bot] <- %lld button [%s]\n", (long long)msg.chatId, d.c_str());
 
     if (!Store::isSubscribed(msg.chatId)) {
         g_bot->endQuery(msg, "Нет доступа", true);
@@ -248,6 +260,7 @@ void handleText(const TBMessage &msg)
 {
     String t = msg.text;
     t.trim();
+    Serial.printf("[bot] <- %lld: %s\n", (long long)msg.chatId, t.c_str());
 
     // --- subscribe: the only command a stranger may use ---
     if (t.startsWith("/subscribe") || t.startsWith("/start")) {
@@ -307,13 +320,10 @@ void handleText(const TBMessage &msg)
         g_bot->sendMessage(msg, "🧪 Тестовое сообщение поставлено в очередь.");
     }
     else if (t.startsWith("/mute")) {
-        uint32_t hours = 4;
-        int sp = t.indexOf(' ');
-        if (sp > 0)
-            hours = (uint32_t)t.substring(sp + 1).toInt();
-        if (hours == 0)
-            hours = 4;
-        applyMute(msg, hours);
+        // "no argument" and "zero" are different intents: a bare /mute means the default
+        // window, while /mute 0 is how people write "turn it off". Collapsing the two made
+        // the most natural way to disable mute switch it back on instead.
+        applyMute(msg, Util::parseMuteHours(t, 4, MAX_MUTE_HOURS));
     }
     else if (t == "/unmute") {
         applyMute(msg, 0);

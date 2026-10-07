@@ -78,6 +78,23 @@ String fmtAgo(int64_t epoch)
     return fmtShort(epoch);
 }
 
+uint32_t parseMuteHours(const String &cmd, uint32_t defaultHours, uint32_t maxHours)
+{
+    const int sp = cmd.indexOf(' ');
+    if (sp <= 0)
+        return defaultHours;              // bare /mute
+
+    String arg = cmd.substring(sp + 1);
+    arg.trim();
+    if (arg == "0" || arg == "off" || arg == "выкл")
+        return 0;                         // an explicit request to turn it off
+
+    const long h = arg.toInt();
+    if (h <= 0)
+        return defaultHours;
+    return (uint32_t)h > maxHours ? maxHours : (uint32_t)h;
+}
+
 String htmlEscape(const String &s)
 {
     String out;

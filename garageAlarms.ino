@@ -187,6 +187,7 @@ void setup()
 
     Store::begin();
     Net::begin();   // non-blocking: we never wait here for WiFi
+    Store::noteResetReason(Net::resetReasonCode());
 
     alarmInput.begin(PIN_ALARM,  PIN_ALARM_ACTIVE_HIGH,  ALARM_DEBOUNCE_MS,  ALARM_COOLDOWN_MS);
     motionInput.begin(PIN_MOTION, PIN_MOTION_ACTIVE_HIGH, MOTION_DEBOUNCE_MS, MOTION_COOLDOWN_MS,
@@ -195,8 +196,12 @@ void setup()
     Notifier::begin(&bot);
     BotUI::begin(&bot);
 
+    // Raw levels at boot. The alarm input is pulled up and active LOW, so a quiet, correctly
+    // wired contact must read 1 here; a 0 means the line is held down, not that there is smoke.
     Serial.printf("[boot] #%u, reset reason: %s, subscribers: %u\n",
                   Store::bootCount(), Net::resetReasonText(), Store::subCount());
+    Serial.printf("[pins] alarm(GPIO%d)=%d (1=норма), motion(GPIO%d)=%d (0=норма)\n",
+                  PIN_ALARM, digitalRead(PIN_ALARM), PIN_MOTION, digitalRead(PIN_MOTION));
 }
 
 void loop()

@@ -95,6 +95,27 @@ bool AsyncTelegram2::sendCommand(const char *command, const char *payload, bool 
         }
         #endif
 
+        // PATCHED (garageAlarms): dump what actually goes out, so "is the bot asking Telegram
+        // for a silent message?" is answered by evidence instead of by reading the code.
+        if (strcmp(command, "sendMessage") == 0)
+            Serial.printf("[tg] -> %s\n", payload);
+
+        // PATCHED (garageAlarms): this connection is shared with getUpdates, so leftovers from
+        // an earlier reply can still be sitting in the receive buffer. A blocking caller would
+        // read those as the answer to its own request, fail to find HTTP headers in them, and
+        // report a delivered message as unconfirmed — which is a duplicate alarm on the retry.
+        if (blocking)
+        {
+            uint16_t stale = 0;
+            while (telegramClient->available() && stale < 4096)
+            {
+                telegramClient->read();
+                stale++;
+            }
+            if (stale)
+                Serial.printf("[tg] drained %u stale bytes before send\n", stale);
+        }
+
         // Send the whole request in one go is much faster
         // PATCHED (garageAlarms): capture the write result — the non-blocking path used to
         // discard it and fall through to `return false` below, so a perfectly successful
@@ -120,24 +141,37 @@ bool AsyncTelegram2::sendCommand(const char *command, const char *payload, bool 
             // Skip headers
             if (!telegramClient->find((char *)HEADERS_END))
             {
-                log_error("Invalid HTTP response");
+                Serial.printf("[tg] no HTTP headers in reply (connected=%d, avail=%d)\n",
+                              telegramClient->connected(), telegramClient->available());
                 telegramClient->stop();
+                m_waitingReply = false;   // or the caller is gated out forever
                 return false;
             }
 
-            // If there are incoming bytes available from the server, read them and print them:
+            // PATCHED (garageAlarms): upstream drained only what had already arrived, so on a
+            // slow link available() could go false mid-body and a successful send was read as
+            // a failure. Keep reading until the verdict is in or the stream stalls.
             m_rxbuffer = "";
-            while (telegramClient->available())
+            uint32_t lastRx = millis();
+            while (millis() - lastRx < TELEGRAM_REPLY_IDLE_MS &&
+                   millis() - waitStart < TELEGRAM_READ_TIMEOUT)
             {
-                yield();
-                m_rxbuffer += (char)telegramClient->read();
+                if (telegramClient->available())
+                {
+                    m_rxbuffer += (char)telegramClient->read();
+                    lastRx = millis();
+                    if (m_rxbuffer.indexOf("\"ok\":") > -1 &&
+                        m_rxbuffer.indexOf(",") > m_rxbuffer.indexOf("\"ok\":"))
+                        break;              // verdict parsed, no need for the rest
+                    continue;
+                }
+                if (!telegramClient->connected())
+                    break;
+                delay(1);
             }
 
             m_waitingReply = false;
-            if (m_rxbuffer.indexOf("\"ok\":true") > -1)
-                return true;
-
-            return false;
+            return m_rxbuffer.indexOf("\"ok\":true") > -1;
         }
 
         // PATCHED (garageAlarms): non-blocking mode reports whether the request actually

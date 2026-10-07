@@ -19,6 +19,11 @@ String fmtAgo(int64_t epoch);
 // "2 ч 30 мин" from milliseconds, for cooldowns and mute windows.
 String fmtDuration(uint64_t ms);
 
+// Parse the argument of "/mute [N|0|off]". Returns the window in hours, where 0 means "turn
+// mute off". A bare /mute yields `defaultHours`, and so does anything unparseable — a typo
+// must never silence the alarm by accident.
+uint32_t parseMuteHours(const String &cmd, uint32_t defaultHours, uint32_t maxHours);
+
 // Escape &, < and > so a Telegram username can never break HTML parse_mode.
 String htmlEscape(const String &s);
 

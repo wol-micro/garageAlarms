@@ -28,6 +28,24 @@ bool isCritical(EventType type)
         || type == EventType::SensorStuck;
 }
 
+String muteScreen(bool muted, int64_t until)
+{
+    String s = "🔕 <b>Режим тишины</b>\n\n";
+    if (muted) {
+        s += "Сейчас: <b>тишина до " + Util::fmtShort(until) + "</b>\n\n";
+        s += "<i>Сообщения о движении не приходят. Тревога о дыме приходит всегда.</i>";
+    } else {
+        s += "Сейчас: <b>уведомления включены</b>\n\n";
+        s += "<i>Приходит всё: и движение, и тревога о дыме.</i>";
+    }
+    return s;
+}
+
+bool bypassesMute(EventType type)
+{
+    return isCritical(type) || type == EventType::Test;
+}
+
 String render(EventType type, int64_t ts, bool late)
 {
     String s;
