@@ -207,6 +207,12 @@ void    setHeartbeatDay(int16_t yday)  { g_hbDay = yday; prefs.putShort("hbDay",
 uint32_t menuVersion() { return prefs.getUInt("menuV", 0); }
 void     setMenuVersion(uint32_t v) { prefs.putUInt("menuV", v); }
 
+// Telegram's update offset. Kept in flash because it is the only thing that stops an
+// update being handed to us a second time after a reset: the server holds an update as
+// pending for 24 h until a later poll acknowledges it with a higher offset.
+int32_t botOffset()             { return (int32_t)prefs.getUInt("botOff", 0); }
+void    setBotOffset(int32_t v) { prefs.putUInt("botOff", (uint32_t)v); }
+
 void saveQueue(const QueueItem *items, uint8_t count)
 {
     if (count == 0) {

@@ -434,6 +434,15 @@ void begin(AsyncTelegram2 *bot)
 {
     g_bot = bot;
     g_bot->setFormattingStyle(AsyncTelegram2::FormatStyle::HTML);
+
+    // Resume where the last run stopped reading. Starting from zero asks Telegram for
+    // everything it still holds unacknowledged — up to 24 h of updates — and runs all of
+    // it again.
+    const int32_t off = Store::botOffset();
+    if (off > 0) {
+        g_bot->setUpdateOffset(off);
+        Serial.printf("[bot] resuming from update offset %ld\n", (long)off);
+    }
 }
 
 void loop()
@@ -453,6 +462,13 @@ void loop()
         handleCallback(msg);
     else if (msg.messageType == MessageText)
         handleText(msg);
+
+    // Record the offset only after the update has been acted on. A reset before this line
+    // replays the command, which is the safe direction — nothing is lost, at worst it runs
+    // twice. A reset after it cannot replay anything.
+    const int32_t off = g_bot->updateOffset();
+    if (off > Store::botOffset())
+        Store::setBotOffset(off);
 }
 
 } // namespace BotUI

@@ -128,6 +128,15 @@ public:
     // read that reply as the answer to its own request.
     inline bool isWaitingReply() const { return m_waitingReply; }
 
+    // PATCHED (garageAlarms): expose the update offset so the caller can persist it.
+    // Telegram keeps an update pending until a later getUpdates carries a higher offset,
+    // and this counter lived only in RAM — so every reboot asked again from zero and the
+    // whole unconfirmed backlog (Telegram keeps it for 24 h) was handed back and executed
+    // a second time. On a box with an unstable supply that turns one button press into a
+    // stream of repeats.
+    inline int32_t updateOffset() const        { return m_lastUpdateId; }
+    inline void    setUpdateOffset(int32_t id) { m_lastUpdateId = id; }
+
     // reset the connection between ESP8266 and the telegram server (ex. when connection was lost)
     // returns
     //    true if no error occurred

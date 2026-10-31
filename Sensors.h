@@ -37,10 +37,19 @@ private:
     uint32_t cooldownMs_   = 0;
     uint32_t warmupMs_     = 0;
 
+    // Elapsed time is only credited to the debounce window when it was actually observed.
+    // loop() blocks for seconds inside a Telegram or Pushover send, and the old code
+    // compared the two samples either side of that stall and called the gap a continuous
+    // hold — so a line that was noisy throughout, but happened to be active at both
+    // sampling instants, passed a debounce it never satisfied. A single gap may contribute
+    // at most this much.
+    static const uint32_t SAMPLE_CREDIT_MAX_MS = 50;
+
     bool     lastRaw_      = false;
     bool     stable_       = false;
     bool     everTriggered_ = false;
-    uint32_t lastChangeMs_ = 0;
+    uint32_t lastSampleMs_ = 0;
+    uint32_t observedMs_   = 0;
     uint32_t lastTriggerMs_ = 0;
     uint32_t activeSinceMs_ = 0;
 };

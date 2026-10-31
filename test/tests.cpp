@@ -461,12 +461,78 @@ static void testMuteParsing()
     CHECK(!String("/unmute").startsWith("/mute"),         "/unmute is not swallowed by /mute");
 }
 
+
+// A stalled loop must not be mistaken for a steady contact. loop() blocks for seconds
+// inside a Telegram or Pushover send, and the debouncer only ever sees the samples either
+// side of that gap.
+static void testDebounceAcrossStall()
+{
+    section("Debounce across a blocked loop");
+
+    resetWorld(true);
+    DebouncedInput in;
+    in.begin(18, true, 400, 300000, 0);
+
+    g_pinState[18] = HIGH;
+    advance(10);
+    CHECK(!in.update(), "stall: the edge itself is not an event");
+
+    // Five seconds inside a send. Whatever the line did meanwhile was never sampled, so it
+    // is not evidence: the old code credited the whole gap to the debounce window and fired.
+    advance(5000);
+    CHECK(!in.update(), "stall: an unobserved gap does not satisfy the debounce window");
+
+    // The guard only withholds unobserved time, so a real contact still gets through as
+    // soon as it has actually been watched for the window. Nothing is lost, only delayed.
+    CHECK(run(in, 500), "stall: fires once the level has really been observed");
+}
+
+// One physical episode, one message — unless the box restarts in the middle of it.
+static void testRebootDuringHeldContact()
+{
+    section("Reboot while the contact is held");
+
+    resetWorld(true);
+    DebouncedInput alarm;
+    g_pinState[17] = LOW;                      // smoke contact closed and latched
+    alarm.begin(17, false, 200, 120000, 0);
+    CHECK(run(alarm, 1000),   "held contact alerts once");
+    CHECK(!run(alarm, 60000), "and stays quiet for the cooldown");
+
+    // A brownout wipes the debouncer, and the contact is still closed. We alert again on
+    // purpose: a box that has just booted cannot know whether the smoke in front of it was
+    // already reported, and for an alarm a repeat beats a silence. The consequence is that
+    // an unstable supply turns one episode into one message per restart — which is a power
+    // problem, not a notification one, and the reset-reason histogram is what names it.
+    DebouncedInput afterReboot;
+    afterReboot.begin(17, false, 200, 120000, 0);
+    CHECK(run(afterReboot, 1000), "reboot with the contact still closed alerts again");
+}
+
+// Telegram re-delivers an update until a later poll acknowledges it with a higher offset,
+// and it keeps the unacknowledged ones for 24 h. Holding that offset in RAM alone meant a
+// reset replayed every command the user had sent since.
+static void testBotOffsetSurvivesReboot()
+{
+    section("Telegram update offset");
+
+    resetWorld(true);
+    CHECK(Store::botOffset() == 0, "fresh flash starts from the beginning");
+
+    Store::setBotOffset(4312);
+    resetWorld(false);                         // reboot, flash intact
+    Store::begin();
+    CHECK(Store::botOffset() == 4312, "offset survives a restart, so updates are not replayed");
+}
+
 int main()
 {
     printf("garageAlarms host tests\n");
     testDebounce();
     testWarmup();
     testAlarmActiveAtBoot();
+    testDebounceAcrossStall();
+    testRebootDuringHeldContact();
     testMute();
     testNotifierMuteGating();
     testNotifierDelivery();
@@ -479,6 +545,7 @@ int main()
     testPushoverFailureDoesNotLoseTelegram();
     testPushoverUnconfigured();
     testMuteParsing();
+    testBotOffsetSurvivesReboot();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

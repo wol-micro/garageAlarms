@@ -61,7 +61,8 @@ dropped from the queue without being delivered. A stub built on your belief can 
 your belief.
 
 Covered: `DebouncedInput` (glitch rejection, cooldown, warm-up not arming the cooldown, a
-contact already closed at boot), the mute window (expiry, persistence, fail-open on an
+contact already closed at boot, an unobserved gap from a blocked loop not satisfying the
+window, a reboot during a held contact), the persisted Telegram update offset, the mute window (expiry, persistence, fail-open on an
 unsynced clock), what mute may silence, the `/mute` argument parser, the mute screen wording,
 and `Notifier` delivery (offline retention, exactly-once, retry without duplicates, an
 unconfirmed send never counting as delivery, queue survival across a reboot).
@@ -124,6 +125,10 @@ back a reboot loop and duplicate deliveries:
   the answer to the next request. A confirmed send therefore reported failure and the retry
   delivered a duplicate alarm. The socket is drained before a blocking send; the first run on
   hardware logged 400 stale bytes.
+- **update offset accessors** — `m_lastUpdateId` was private and RAM-only. Telegram holds
+  an update as pending for 24 h until a later `getUpdates` acknowledges it with a higher
+  offset, so every reset asked again from zero and re-executed the whole unacknowledged
+  backlog. `updateOffset()` / `setUpdateOffset()` let `BotUI` keep it in NVS.
 - **ArduinoJson 7** — several call sites still used `DynamicJsonDocument` /
   `StaticJsonDocument`, removed in v7. Added a `JSON_DOC_NAMED` compat macro.
 - **`editMessage()`** — never sent `parse_mode`, so HTML rendered as literal tags when a
@@ -142,11 +147,18 @@ The bot is started only once WiFi is up **and** NTP has synced, because TLS cert
 validation fails without a real clock. If WiFi stays down `WIFI_DEAD_REBOOT_MS`, or Telegram
 is unreachable `BOT_DEAD_REBOOT_MS` (tracked via `Net::noteBotOk()`), the box reboots itself.
 
-**Debounce is time-based, not a latch.** `DebouncedInput` requires the active level to hold
-continuously for `*_DEBOUNCE_MS` before it counts, then ignores the input for `*_COOLDOWN_MS`.
-The original `latched = latched || digitalRead(pin) == LOW` accepted a single sample and held
-it forever, which made it a noise amplifier on long garage cabling. Motion also has a
-`MOTION_WARMUP_MS` grace period after boot (PIR settling); smoke deliberately has none.
+**Debounce counts observed time, not elapsed time.** `DebouncedInput` requires the active
+level to hold for `*_DEBOUNCE_MS` before it counts, then ignores the input for
+`*_COOLDOWN_MS`. The original `latched = latched || digitalRead(pin) == LOW` accepted a
+single sample and held it forever, which made it a noise amplifier on long garage cabling.
+The version after that compared `millis()` against the last edge — but `loop()` blocks for
+seconds inside a Telegram or Pushover send, so the two samples either side of that stall
+were taken as proof of a continuous hold the input had never been watched for. A gap now
+contributes at most `SAMPLE_CREDIT_MAX_MS` (50 ms) to the window, so unobserved time is
+never credited. With a normal ~2 ms loop this is identical to the old behaviour; it only
+bites during a stall, and only ever delays an event by one debounce window — a latching
+contact cannot be lost to it. Motion also has a `MOTION_WARMUP_MS` grace period after boot
+(PIR settling); smoke deliberately has none.
 
 **The two inputs have opposite polarity** and each is pulled toward its *inactive* level, so
 a cut wire reads as quiet rather than as an alarm:
@@ -212,6 +224,26 @@ histogram kept in NVS; incoming commands, mute changes, events suppressed by mut
 outgoing Telegram payload are logged to Serial. The payload dump is what established that no
 request carries `disable_notification`, so a message arriving without a sound is a Telegram
 client setting rather than something the firmware asks for.
+
+### Where duplicates come from
+
+Delivery is at-least-once by design, so a repeat is always preferable to a loss — but it is
+worth knowing which repeats are which:
+
+- **A reset replaying a Telegram update.** Fixed: the offset is persisted (see above). This
+  was the only mechanism that could repeat something indefinitely, because the backlog is
+  re-served on every boot for 24 h.
+- **A reset while the smoke contact is still closed.** The debouncer and its cooldown live
+  in RAM, so the held contact alerts again after the reboot. Deliberate: a box that has just
+  booted cannot know whether the smoke in front of it was already reported. The consequence
+  is that an unstable supply turns one episode into one message per restart, which is a
+  power problem — the reset-reason histogram in `/status` is what names it.
+- **A reset in the few milliseconds between Telegram confirming a send and `persist()`
+  writing the shortened queue.** Unavoidable without a two-phase commit, and the safe
+  direction.
+- **Coalescing.** A new occurrence folds into an undelivered entry for the same
+  (chat, channel, type) rather than adding a row, so an outage produces one message with a
+  count instead of a burst. The retry budget is deliberately not reset by a fold.
 
 ### Known limitation
 

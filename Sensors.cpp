@@ -13,7 +13,8 @@ void DebouncedInput::begin(uint8_t pin, bool activeHigh, uint32_t debounceMs, ui
     pinMode(pin_, activeHigh_ ? INPUT_PULLDOWN : INPUT_PULLUP);
 
     lastRaw_      = (digitalRead(pin_) == (activeHigh_ ? HIGH : LOW));
-    lastChangeMs_ = millis();
+    lastSampleMs_ = millis();
+    observedMs_   = 0;
     // stable_ deliberately starts inactive even if the pin is already active: an input that
     // is held at boot should still produce one alert once it has debounced, because we have
     // no idea how long it has been that way.
@@ -23,16 +24,27 @@ void DebouncedInput::begin(uint8_t pin, bool activeHigh, uint32_t debounceMs, ui
 bool DebouncedInput::update()
 {
     const uint32_t now = millis();
+
+    // Only time we were actually here to see counts toward the window. A long gap means
+    // loop() was blocked in a send, not that the line was quiet: whatever the level did in
+    // between was never sampled, so it cannot be used as evidence of a steady contact.
+    uint32_t credit = now - lastSampleMs_;
+    lastSampleMs_ = now;
+    if (credit > SAMPLE_CREDIT_MAX_MS)
+        credit = SAMPLE_CREDIT_MAX_MS;
+
     const bool raw = (digitalRead(pin_) == (activeHigh_ ? HIGH : LOW));
 
     if (raw != lastRaw_) {
-        lastRaw_      = raw;
-        lastChangeMs_ = now;
+        lastRaw_    = raw;
+        observedMs_ = 0;
         return false;               // level just moved, wait for it to settle
     }
 
-    if (now - lastChangeMs_ < debounceMs_)
-        return false;               // not stable long enough yet
+    observedMs_ += credit;
+    if (observedMs_ < debounceMs_)
+        return false;               // not observed at the same level long enough yet
+    observedMs_ = debounceMs_;      // saturate; counting past the window has no meaning
 
     if (stable_ == raw)
         return false;               // nothing new

@@ -83,6 +83,10 @@ void    setHeartbeatDay(int16_t yday);
 uint32_t menuVersion();
 void     setMenuVersion(uint32_t v);
 
+// --- Telegram update offset (survives a reboot so an update is not replayed) ---
+int32_t botOffset();
+void    setBotOffset(int32_t v);
+
 // --- persisted notification queue ---
 void   saveQueue(const QueueItem *items, uint8_t count);
 uint8_t loadQueue(QueueItem *items, uint8_t maxItems);
