@@ -20,8 +20,12 @@ void loop();
 // Queue an event for every subscriber.
 void broadcast(EventType type, int64_t ts);
 
-// Queue an event for one chat (test messages, replies to a specific user).
+// Queue an event for one chat (replies to a specific user).
 void enqueue(int64_t chatId, EventType type, int64_t ts);
+
+// Queue for one chat and, if the event type warrants it, for Pushover too. Used by /test so
+// a delivery check exercises every path a real alarm would take.
+void enqueueBothChannels(int64_t chatId, EventType type, int64_t ts);
 
 uint8_t  pending();
 uint32_t deliveredCount();

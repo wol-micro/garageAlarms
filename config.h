@@ -26,7 +26,7 @@
 // After a trigger the same input is ignored for this long, so one real event produces one
 // notification instead of a stream.
 #define ALARM_COOLDOWN_MS       (2UL * 60 * 1000)    // 2 min
-#define MOTION_COOLDOWN_MS      (5UL * 60 * 1000)    // 5 min
+#define MOTION_COOLDOWN_MS      (10UL * 60 * 1000)   // 10 min
 
 // A PIR holds its output high for the first half-minute or so after power-up while it
 // settles, which is not motion. The smoke input gets no such grace period: a contact that is

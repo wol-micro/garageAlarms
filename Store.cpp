@@ -17,6 +17,9 @@ int64_t  g_lastAlarm   = 0;
 int64_t  g_lastMotion  = 0;
 int16_t  g_hbDay       = -1;
 uint32_t g_resetHist[RESET_SLOTS] = {0};
+uint32_t g_txOk[2]   = {0, 0};
+uint32_t g_txFail[2] = {0, 0};
+uint32_t g_txRetry   = 0;
 
 void persistSubs()
 {
@@ -49,6 +52,11 @@ void begin()
 
     if (prefs.getBytes("rhist", g_resetHist, sizeof(g_resetHist)) != sizeof(g_resetHist))
         memset(g_resetHist, 0, sizeof(g_resetHist));
+    if (prefs.getBytes("txok", g_txOk, sizeof(g_txOk)) != sizeof(g_txOk))
+        memset(g_txOk, 0, sizeof(g_txOk));
+    if (prefs.getBytes("txfail", g_txFail, sizeof(g_txFail)) != sizeof(g_txFail))
+        memset(g_txFail, 0, sizeof(g_txFail));
+    g_txRetry = prefs.getUInt("txretry", 0);
 
     // The owner is always a subscriber. Without this, a fresh flash has nobody to alert.
     if (OWNER_CHAT_ID != 0 && !isSubscribed(OWNER_CHAT_ID))
@@ -118,6 +126,45 @@ bool isMuted()
     if (now < 1700000000)   // clock not synced yet; fail open, an alarm beats a silent box
         return false;
     return (int64_t)now < g_muteUntil;
+}
+
+void noteDelivery(uint8_t channel, bool ok)
+{
+    const uint8_t ch = channel < 2 ? channel : 0;
+    if (ok) {
+        g_txOk[ch]++;
+        prefs.putBytes("txok", g_txOk, sizeof(g_txOk));
+    } else {
+        g_txFail[ch]++;
+        prefs.putBytes("txfail", g_txFail, sizeof(g_txFail));
+    }
+}
+
+void noteRetry()
+{
+    g_txRetry++;
+    prefs.putUInt("txretry", g_txRetry);
+}
+
+uint32_t deliverySent(uint8_t channel)   { return g_txOk[channel < 2 ? channel : 0]; }
+uint32_t deliveryFailed(uint8_t channel) { return g_txFail[channel < 2 ? channel : 0]; }
+uint32_t deliveryRetries()               { return g_txRetry; }
+
+void resetStats()
+{
+    g_bootCount = 0;
+    memset(g_resetHist, 0, sizeof(g_resetHist));
+    memset(g_txOk, 0, sizeof(g_txOk));
+    memset(g_txFail, 0, sizeof(g_txFail));
+    g_txRetry   = 0;
+    g_alarmCount = 0;
+
+    prefs.putUInt("boots", 0);
+    prefs.putBytes("rhist", g_resetHist, sizeof(g_resetHist));
+    prefs.putBytes("txok", g_txOk, sizeof(g_txOk));
+    prefs.putBytes("txfail", g_txFail, sizeof(g_txFail));
+    prefs.putUInt("txretry", 0);
+    prefs.putUInt("alarmN", 0);
 }
 
 void noteResetReason(uint8_t reason)

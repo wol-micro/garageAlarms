@@ -38,9 +38,22 @@ const char *title(EventType type)
 
 bool goesToPushover(EventType type)
 {
+    // /test is included on purpose: a delivery check that only exercises one of the two
+    // channels is not a delivery check. It goes out at normal priority, though — a test
+    // must not nag until acknowledged.
     return type == EventType::AlarmSmoke
         || type == EventType::AlarmOngoing
-        || type == EventType::Motion;
+        || type == EventType::Motion
+        || type == EventType::Test;
+}
+
+int pushoverPriority(EventType type)
+{
+    switch (type) {
+        case EventType::Test:   return 0;
+        case EventType::Motion: return PUSHOVER_PRIORITY_MOTION;
+        default:                return PUSHOVER_PRIORITY_ALARM;
+    }
 }
 
 bool isCritical(EventType type)
@@ -68,7 +81,7 @@ bool bypassesMute(EventType type)
     return isCritical(type) || type == EventType::Test;
 }
 
-String render(EventType type, int64_t ts, bool late)
+String render(EventType type, int64_t ts, bool late, uint8_t repeats)
 {
     String s;
     s.reserve(320);
@@ -146,6 +159,11 @@ String render(EventType type, int64_t ts, bool late)
     default:
         s += "…";
         break;
+    }
+
+    if (repeats > 1) {
+        s += "\n\n🔁 <b>Срабатываний: " + String(repeats) + "</b>";
+        s += "\n<i>Склеены, пока не было связи. Время выше — первое из них.</i>";
     }
 
     return s;

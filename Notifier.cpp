@@ -89,6 +89,25 @@ static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts,
         return false;
     }
 
+    // Coalesce: if this destination already has an undelivered entry for the same event
+    // type, fold the new occurrence into it instead of adding a row. Without this, an outage
+    // lasting longer than the sensor cooldown accumulates one entry per cooldown period and
+    // the user gets a burst when the link returns. The original timestamp is kept — it is
+    // when the episode began — and the count rides along.
+    //
+    // The retry budget is deliberately NOT reset: a stream of new occurrences must not let
+    // an entry retry forever.
+    for (uint8_t i = 0; i < g_count; i++) {
+        QueueItem &ex = g_queue[i];
+        if (ex.channel == channel && ex.chatId == chatId && ex.type == (uint8_t)type) {
+            if (ex.repeats < 255)
+                ex.repeats++;
+            Serial.printf("[notify] %s folded into a queued entry (x%u)\n",
+                          Events::name(type), ex.repeats);
+            return true;
+        }
+    }
+
     if (!makeRoom())
         return false;
 
@@ -98,7 +117,7 @@ static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts,
     it.type          = (uint8_t)type;
     it.attempts      = 0;
     it.channel       = channel;
-    it.reserved      = 0;
+    it.repeats       = 1;
     it.nextAttemptMs = millis();
     return true;
 }
@@ -109,6 +128,15 @@ void enqueue(int64_t chatId, EventType type, int64_t ts)
         persist();
         Serial.printf("[notify] queued %s for %lld\n", Events::name(type), (long long)chatId);
     }
+}
+
+void enqueueBothChannels(int64_t chatId, EventType type, int64_t ts)
+{
+    bool any = enqueueNoPersist(chatId, type, ts);
+    if (Events::goesToPushover(type) && Pushover::configured())
+        any |= enqueueNoPersist(0, type, ts, CHANNEL_PUSHOVER);
+    if (any)
+        persist();
 }
 
 void broadcast(EventType type, int64_t ts)
@@ -162,7 +190,7 @@ void loop()
     const int64_t nowEpoch = Util::clockReady() ? (int64_t)time(nullptr) : it.eventTs;
     const bool late = (nowEpoch - it.eventTs) > LATE_AFTER_SEC;
 
-    const String body = Events::render((EventType)it.type, it.eventTs, late);
+    const String body = Events::render((EventType)it.type, it.eventTs, late, it.repeats);
 
     g_lastSendMs = millis();
 
@@ -171,10 +199,11 @@ void loop()
     // that as success deletes the alert without a trace.
     bool ok;
     if (it.channel == CHANNEL_PUSHOVER) {
-        const bool motion = ((EventType)it.type == EventType::Motion);
-        ok = Pushover::send(Events::title((EventType)it.type), body,
-                            motion ? PUSHOVER_PRIORITY_MOTION : PUSHOVER_PRIORITY_ALARM,
-                            motion ? PUSHOVER_SOUND_MOTION : PUSHOVER_SOUND_ALARM,
+        const EventType et = (EventType)it.type;
+        const int prio = Events::pushoverPriority(et);
+        ok = Pushover::send(Events::title(et), body, prio,
+                            et == EventType::Motion ? PUSHOVER_SOUND_MOTION
+                                                    : PUSHOVER_SOUND_ALARM,
                             PUSHOVER_RETRY_SEC, PUSHOVER_EXPIRE_SEC);
     } else {
         TBMessage out;
@@ -184,6 +213,7 @@ void loop()
 
     if (ok) {
         g_delivered++;
+        Store::noteDelivery(it.channel, true);
         Journal::log("send", "%s via %s ok (attempt %u)",
                      Events::name((EventType)it.type),
                      it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",
@@ -199,11 +229,13 @@ void loop()
                   Events::name((EventType)it.type),
                   it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",
                   it.attempts + 1);
+    Store::noteRetry();
     it.attempts++;
     if (it.attempts >= NOTIFY_MAX_ATTEMPTS) {
         Serial.printf("[notify] giving up on %s for %lld after %u attempts\n",
                       Events::name((EventType)it.type), (long long)it.chatId, it.attempts);
         g_dropped++;
+        Store::noteDelivery(it.channel, false);
         Journal::log("send", "GAVE UP on %s via %s after %u attempts",
                      Events::name((EventType)it.type),
                      it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",

@@ -25,7 +25,7 @@ struct QueueItem {
     uint8_t  type;          // EventType
     uint8_t  attempts;
     uint8_t  channel;       // CHANNEL_*
-    uint8_t  reserved;
+    uint8_t  repeats;       // occurrences coalesced into this entry; 0 and 1 both mean one
     uint32_t nextAttemptMs; // millis-based, recomputed after a reboot
 };
 
@@ -50,6 +50,18 @@ bool    isMuted();
 #define RESET_SLOTS 16
 void     noteResetReason(uint8_t reason);
 uint32_t resetReasonCount(uint8_t reason);
+
+// Delivery statistics, per channel and persisted. "Is delivery reliable?" is a question
+// about a long run, so the counters have to survive the reboots they are measuring.
+void     noteDelivery(uint8_t channel, bool ok);
+void     noteRetry();
+uint32_t deliverySent(uint8_t channel);
+uint32_t deliveryFailed(uint8_t channel);
+uint32_t deliveryRetries();
+
+// Zero the boot counter, the reset histogram and the delivery counters, so a measurement can
+// be restarted after a hardware change without reflashing.
+void resetStats();
 
 // --- counters and stats ---
 uint32_t bootCount();

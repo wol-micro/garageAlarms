@@ -308,6 +308,61 @@ static void testMuteScreenText()
 }
 
 
+
+// An outage longer than the sensor cooldown used to accumulate one queue entry per period.
+static void testCoalescing()
+{
+    section("Coalescing while the link is down");
+
+    resetWorld(true);
+    Store::begin();
+    AsyncTelegram2 bot;
+    Notifier::begin(&bot);
+    g_pushConfigured = false;
+
+    test_setOnline(false);
+    const int64_t first = g_fakeEpoch;
+    Notifier::broadcast(EventType::Motion, first);
+    for (int i = 0; i < 4; i++) {
+        advance(600000);                    // a cooldown period apart
+        Notifier::broadcast(EventType::Motion, g_fakeEpoch);
+    }
+    CHECK(Notifier::pending() == 1, "five occurrences collapse into one queue entry");
+
+    test_setOnline(true);
+    advance(1000); Notifier::loop();
+    CHECK(bot.delivered.size() == 1, "one message is sent, not five");
+
+    const std::string &body = bot.delivered[0].body;
+    CHECK(body.find("Срабатываний: 5") != std::string::npos,
+          "the message reports how many were folded in");
+
+    // Different event types must not be folded together.
+    resetWorld(false);
+    g_pushConfigured = false;          // resetWorld re-enables it; keep this check single-subject
+    test_setOnline(false);
+    Notifier::broadcast(EventType::Motion, g_fakeEpoch);
+    Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
+    CHECK(Notifier::pending() == 2, "motion and smoke stay separate entries");
+
+    // Coalescing must not hand an entry an endless retry budget.
+    resetWorld(true);
+    Store::begin();
+    AsyncTelegram2 bot2;
+    Notifier::begin(&bot2);
+    g_pushConfigured = false;
+    bot2.transportOk = false;
+    Notifier::broadcast(EventType::Motion, g_fakeEpoch);
+    for (int i = 0; i < 60; i++) {
+        advance(60000);
+        Notifier::broadcast(EventType::Motion, g_fakeEpoch);   // keeps folding in
+        Notifier::loop();
+    }
+    // A fresh entry is created after each give-up, so the queue is not expected to be empty;
+    // what matters is that folding never bought an entry an unlimited retry budget.
+    CHECK(Notifier::droppedCount() >= 1, "it still gives up after the retry budget");
+}
+
 // ------------------------------------------------------------- pushover --
 static void testPushoverDuplicatesAlarms()
 {
@@ -338,6 +393,20 @@ static void testPushoverDuplicatesAlarms()
     resetWorld(false);
     Notifier::broadcast(EventType::Heartbeat, g_fakeEpoch);
     CHECK(Notifier::pending() == 1, "heartbeat: telegram only, no pushover copy");
+
+    // Drain it: the next check counts queue entries, so a leftover would be read as a
+    // second channel that is not there.
+    for (int i = 0; i < 6 && Notifier::pending(); i++) { advance(1000); Notifier::loop(); }
+    CHECK(Notifier::pending() == 0, "heartbeat drained before the next check");
+
+    // /test must exercise both channels, or it is not a delivery check — but at normal
+    // priority, so checking delivery does not nag until acknowledged.
+    resetWorld(false);
+    Notifier::enqueueBothChannels(1001, EventType::Test, g_fakeEpoch);
+    CHECK(Notifier::pending() == 2, "/test: queued for both channels");
+    for (int i = 0; i < 6; i++) { advance(1000); Notifier::loop(); }
+    CHECK(g_pushSent.size() == 1,  "/test: pushover got it");
+    CHECK(g_pushLastPriority == 0, "/test: sent at normal priority, not emergency");
 }
 
 static void testPushoverFailureDoesNotLoseTelegram()
@@ -405,6 +474,7 @@ int main()
     testUnconfirmedSendIsNotDelivery();
     testNoSendWhileReplyOutstanding();
     testMuteScreenText();
+    testCoalescing();
     testPushoverDuplicatesAlarms();
     testPushoverFailureDoesNotLoseTelegram();
     testPushoverUnconfigured();

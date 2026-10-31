@@ -17,7 +17,7 @@ namespace {
 AsyncTelegram2 *g_bot = nullptr;
 
 // Bump whenever the command list below changes, so it gets re-registered once.
-const uint32_t MENU_VERSION = 4;
+const uint32_t MENU_VERSION = 5;
 
 bool g_menuChecked = false;
 
@@ -136,6 +136,20 @@ String txtStatus()
     s += "\n";
     s += "👥 Подписчиков: " + String(Store::subCount()) + "\n";
 
+    const uint32_t okTg = Store::deliverySent(CHANNEL_TELEGRAM);
+    const uint32_t okPo = Store::deliverySent(CHANNEL_PUSHOVER);
+    const uint32_t flTg = Store::deliveryFailed(CHANNEL_TELEGRAM);
+    const uint32_t flPo = Store::deliveryFailed(CHANNEL_PUSHOVER);
+    s += "📤 Доставка:\n";
+    s += "   Telegram: " + String(okTg) + " ок, " + String(flTg) + " потеряно\n";
+    s += "   Pushover: " + String(okPo) + " ок, " + String(flPo) + " потеряно\n";
+    s += "   Повторов: " + String(Store::deliveryRetries());
+    if (okTg + okPo > 0) {
+        const uint32_t total = okTg + okPo + flTg + flPo;
+        s += " · успех " + String((uint32_t)((okTg + okPo) * 100 / total)) + "%";
+    }
+    s += "\n";
+
     s += "📨 Очередь: ";
     s += Notifier::pending() ? String(Notifier::pending()) + " в ожидании" : String("пусто");
     s += " <i>(доставлено " + String(Notifier::deliveredCount());
@@ -161,6 +175,8 @@ String txtHelp(int64_t chatId)
         s += "\n<b>Только для владельца:</b>\n";
         s += "/who — список подписчиков\n";
         s += "/log — последние записи журнала\n";
+        s += "/resetstats — обнулить счётчики\n";
+        s += "/clearlog — очистить журнал\n";
         s += "/reboot — перезагрузить контроллер\n";
     }
     s += "\n🚨 <i>Тревога о дыме приходит всегда, режим тишины на неё не влияет.</i>";
@@ -252,8 +268,8 @@ void handleCallback(const TBMessage &msg)
         return;
     }
     else if (d == "t") {
-        Notifier::enqueue(msg.chatId, EventType::Test,
-                          Util::clockReady() ? (int64_t)time(nullptr) : 0);
+        Notifier::enqueueBothChannels(msg.chatId, EventType::Test,
+                                      Util::clockReady() ? (int64_t)time(nullptr) : 0);
         g_bot->endQuery(msg, "Тест поставлен в очередь");
         return;
     }
@@ -320,9 +336,9 @@ void handleText(const TBMessage &msg)
         show(msg, txtHelp(msg.chatId), kbJustBack());
     }
     else if (t == "/test") {
-        Notifier::enqueue(msg.chatId, EventType::Test,
-                          Util::clockReady() ? (int64_t)time(nullptr) : 0);
-        g_bot->sendMessage(msg, "🧪 Тестовое сообщение поставлено в очередь.");
+        Notifier::enqueueBothChannels(msg.chatId, EventType::Test,
+                                      Util::clockReady() ? (int64_t)time(nullptr) : 0);
+        g_bot->sendMessage(msg, "🧪 Тест поставлен в очередь — в Telegram и в Pushover.");
     }
     else if (t.startsWith("/mute")) {
         // "no argument" and "zero" are different intents: a bare /mute means the default
@@ -338,6 +354,26 @@ void handleText(const TBMessage &msg)
             g_bot->sendMessage(msg, "👋 Отписка выполнена. Чтобы вернуться — <code>/subscribe КОД</code>");
         else
             g_bot->sendMessage(msg, "⚠️ Владельца отписать нельзя.");
+    }
+    else if (t == "/resetstats") {
+        if (isOwner(msg.chatId)) {
+            Store::resetStats();
+            Journal::log("stats", "counters reset by owner");
+            g_bot->sendMessage(msg,
+                "🧹 <b>Счётчики обнулены.</b>\n\n"
+                "Перезагрузки, причины сбросов, тревоги и статистика доставки начинают "
+                "считаться заново. Журнал не тронут — его чистит /clearlog.");
+        } else {
+            g_bot->sendMessage(msg, "⛔️ Только для владельца.");
+        }
+    }
+    else if (t == "/clearlog") {
+        if (isOwner(msg.chatId)) {
+            Journal::clear();
+            g_bot->sendMessage(msg, "🧹 Журнал очищен.");
+        } else {
+            g_bot->sendMessage(msg, "⛔️ Только для владельца.");
+        }
     }
     else if (t == "/log") {
         if (isOwner(msg.chatId)) {
