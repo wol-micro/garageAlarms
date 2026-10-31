@@ -13,7 +13,7 @@ mkdir -p "$STAGE"
 
 # Logic under test (no .ino, no WiFi, no Telegram transport).
 for f in Store.cpp Store.h Sensors.cpp Sensors.h Notifier.cpp Notifier.h \
-         Events.cpp Events.h Util.cpp Util.h config.h AppState.h; do
+         Events.cpp Events.h Util.cpp Util.h config.h AppState.h Pushover.h; do
     cp "$ROOT/$f" "$STAGE/"
 done
 
@@ -28,6 +28,7 @@ g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -O0 -g \
     -I"$STAGE" \
     "$STAGE"/tests.cpp "$STAGE"/Store.cpp "$STAGE"/Sensors.cpp \
     "$STAGE"/Notifier.cpp "$STAGE"/Events.cpp "$STAGE"/Util.cpp "$STAGE"/Net.cpp \
+    "$STAGE"/Pushover.cpp \
     -o "$STAGE/tests"
 
 "$STAGE/tests"

@@ -16,18 +16,27 @@ User-facing bot text is Russian; code, comments and logs are English.
 ## Build & flash
 
 ```bash
-FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=min_spiffs"
+FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=custom"
 arduino-cli compile --fqbn "$FQBN" .
 arduino-cli upload  --fqbn "$FQBN" -p /dev/ttyACM0 .
 arduino-cli monitor -p /dev/ttyACM0 -c baudrate=115200
 ```
 
+`PartitionScheme=custom` picks up `partitions.csv` from the sketch folder. The stock tables
+stop at 4 MB and leave 12 MB of this chip unallocated; ours reclaims it as a LittleFS volume
+for the journal. `nvs`, `otadata`, `app0` and `app1` keep their stock offsets, so switching to
+it does not disturb stored subscribers or counters.
+
+**Watch the app size yourself.** With a custom table `arduino-cli` reports usage against the
+whole 16 MB chip ("6% of 16777216"), not against the 1.9 MB `app0` slot that actually
+constrains the build, so it will not warn before an overflow. Divide by `0x1E0000` instead —
+currently ~56%.
+
 The target is an ESP32-S3 (N16R8, 16 MB flash). Plain `esp32:esp32:esp32` is **not**
 supported: the code relies on `INPUT_PULLDOWN` and on the S3's USB/JTAG reset reasons.
 `CDCOnBoot=cdc` is required, or `Serial` goes to the UART pins and nothing shows up over USB.
 
-Verified against ESP32 core **3.3.11** and ArduinoJson **7.4.2**. Current size: ~53% of the
-1.9 MB app partition.
+Verified against ESP32 core **3.3.11** and ArduinoJson **7.4.2**.
 
 `secrets.h` is gitignored. Copy `secrets.example.h` to `secrets.h` and fill it in (WiFi
 credentials, bot token, `OWNER_CHAT_ID`, `SUBSCRIBE_PIN`), or the build fails on the first
@@ -78,6 +87,9 @@ excludes any file named `secrets.h` at any depth.
 | `BotUI.*` | commands, inline menus, native `/` command list |
 | `Util.*` | time/duration formatting (Russian), HTML escaping |
 | `src/AsyncTelegram2/` | **vendored and patched** copy of the library — see below |
+| `Journal.*` | append-only event log on LittleFS, held behind an `fs::FS *` |
+| `Pushover.*` | second delivery channel; `pushover_cert.h` pins its root CA |
+| `partitions.csv` | 16 MB table; the 12 MB `littlefs` volume lives here |
 | `test/` | host-side test suite and hardware stubs |
 
 `src/` is compiled recursively by the Arduino build, which is why the vendored library lives
@@ -178,6 +190,22 @@ for four hours. Anything unparseable falls back to the default window rather tha
 The mute screen text lives in `Events::muteScreen` so a test can render it — it used to append
 "motion notifications do not arrive" unconditionally, so switching mute off still claimed it
 was on.
+
+**Two delivery channels.** Alarms (smoke, ongoing smoke, motion) are duplicated to Pushover;
+everything else stays on Telegram. The Pushover copy is one queue item with
+`channel = CHANNEL_PUSHOVER` and `chatId = 0`, so it inherits the same retries, backoff and
+across-reboot persistence — and a failure on one channel never costs the other. `channel`
+occupies the byte that used to be `QueueItem` padding, so `sizeof` is unchanged and a queue
+written by an older build still loads (its zero byte reads back as Telegram). Pushover sends
+at emergency priority, which repeats until acknowledged and overrides the phone's quiet
+hours; that is the point of having it, since a Telegram message arrives with whatever sound
+the recipient's client happens to be set to. With the credentials left at their placeholder
+values the channel disables itself and Telegram carries on alone.
+
+**The journal is best-effort.** `Journal` writes to LittleFS and every entry point tolerates
+a failed mount, because losing the log must never take the alarm down with it. It exists
+because a month was spent unable to answer "why does it reboot": counters say how often, a
+journal says what happened around it. `/log` (owner only) returns the tail.
 
 **Diagnostics.** `/status` and the boot log carry the raw pin levels and a reset-reason
 histogram kept in NVS; incoming commands, mute changes, events suppressed by mute and the

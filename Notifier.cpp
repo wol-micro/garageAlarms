@@ -4,6 +4,8 @@
 #include "Util.h"
 #include "config.h"
 #include "src/AsyncTelegram2/AsyncTelegram2.h"
+#include "Pushover.h"
+#include "Journal.h"
 
 namespace {
 
@@ -78,7 +80,8 @@ void begin(AsyncTelegram2 *bot)
 }
 
 // Returns true if the item was actually queued.
-static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts)
+static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts,
+                             uint8_t channel = CHANNEL_TELEGRAM)
 {
     // Mute silences chatter, never a real alarm and never an explicit delivery check.
     if (Store::isMuted() && !Events::bypassesMute(type)) {
@@ -94,6 +97,7 @@ static bool enqueueNoPersist(int64_t chatId, EventType type, int64_t ts)
     it.eventTs       = ts;
     it.type          = (uint8_t)type;
     it.attempts      = 0;
+    it.channel       = channel;
     it.reserved      = 0;
     it.nextAttemptMs = millis();
     return true;
@@ -114,9 +118,18 @@ void broadcast(EventType type, int64_t ts)
     bool any = false;
     for (uint8_t i = 0; i < n; i++)
         any |= enqueueNoPersist(list[i].id, type, ts);
-    if (any)
+
+    // Pushover is a single destination, not one per subscriber, and only duplicates the two
+    // alarm kinds. It is queued like any other item so it inherits the retries and the
+    // across-reboot persistence.
+    bool push = false;
+    if (Events::goesToPushover(type) && Pushover::configured())
+        push = enqueueNoPersist(0, type, ts, CHANNEL_PUSHOVER);
+
+    if (any || push)
         persist();   // one flash write per event, not one per subscriber
-    Serial.printf("[notify] queued %s for %u subscriber(s)\n", Events::name(type), n);
+    Serial.printf("[notify] queued %s for %u subscriber(s)%s\n",
+                  Events::name(type), n, push ? " + pushover" : "");
 }
 
 void loop()
@@ -125,20 +138,22 @@ void loop()
         return;
     if (!Net::isOnline())
         return;
-    if (g_bot->isWaitingReply())
-        return;   // a getUpdates reply is outstanding; ours would read its response instead
-
     const uint32_t now = millis();
     if (now - g_lastSendMs < NOTIFY_MIN_SEND_GAP_MS)
         return;   // stay well under Telegram's per-bot rate limit
 
-    // One send per loop iteration keeps the message poller responsive.
+    // One send per loop iteration keeps the message poller responsive. A Telegram item is
+    // skipped while a getUpdates reply is outstanding, because it shares that connection and
+    // would read the reply as its own answer; Pushover has its own socket and is unaffected.
+    const bool telegramBusy = g_bot->isWaitingReply();
     int idx = -1;
     for (uint8_t i = 0; i < g_count; i++) {
-        if ((int32_t)(now - g_queue[i].nextAttemptMs) >= 0) {
-            idx = i;
-            break;
-        }
+        if ((int32_t)(now - g_queue[i].nextAttemptMs) < 0)
+            continue;
+        if (g_queue[i].channel == CHANNEL_TELEGRAM && telegramBusy)
+            continue;
+        idx = i;
+        break;
     }
     if (idx < 0)
         return;
@@ -151,28 +166,48 @@ void loop()
 
     g_lastSendMs = millis();
 
-    // Confirmed send. Writing the bytes is not delivery: on a weak link the TLS write
-    // succeeds into the socket buffer while the request never reaches Telegram, and treating
-    // that as success deletes the alert without a trace. We wait for "ok":true instead.
-    TBMessage out;
-    out.chatId = it.chatId;
-    const bool ok = g_bot->sendMessage(out, body.c_str(), nullptr, true);
+    // Confirmed send on both channels. Writing the bytes is not delivery: on a weak link the
+    // TLS write succeeds into the socket buffer while the request never arrives, and treating
+    // that as success deletes the alert without a trace.
+    bool ok;
+    if (it.channel == CHANNEL_PUSHOVER) {
+        const bool motion = ((EventType)it.type == EventType::Motion);
+        ok = Pushover::send(Events::title((EventType)it.type), body,
+                            motion ? PUSHOVER_PRIORITY_MOTION : PUSHOVER_PRIORITY_ALARM,
+                            motion ? PUSHOVER_SOUND_MOTION : PUSHOVER_SOUND_ALARM,
+                            PUSHOVER_RETRY_SEC, PUSHOVER_EXPIRE_SEC);
+    } else {
+        TBMessage out;
+        out.chatId = it.chatId;
+        ok = g_bot->sendMessage(out, body.c_str(), nullptr, true);
+    }
 
     if (ok) {
         g_delivered++;
-        Net::noteBotOk();
+        Journal::log("send", "%s via %s ok (attempt %u)",
+                     Events::name((EventType)it.type),
+                     it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",
+                     it.attempts + 1);
+        if (it.channel == CHANNEL_TELEGRAM)
+            Net::noteBotOk();
         removeAt(idx);
         persist();
         return;
     }
 
-    Serial.printf("[notify] %s to %lld not confirmed (attempt %u), will retry\n",
-                  Events::name((EventType)it.type), (long long)it.chatId, it.attempts + 1);
+    Serial.printf("[notify] %s via %s not confirmed (attempt %u), will retry\n",
+                  Events::name((EventType)it.type),
+                  it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",
+                  it.attempts + 1);
     it.attempts++;
     if (it.attempts >= NOTIFY_MAX_ATTEMPTS) {
         Serial.printf("[notify] giving up on %s for %lld after %u attempts\n",
                       Events::name((EventType)it.type), (long long)it.chatId, it.attempts);
         g_dropped++;
+        Journal::log("send", "GAVE UP on %s via %s after %u attempts",
+                     Events::name((EventType)it.type),
+                     it.channel == CHANNEL_PUSHOVER ? "pushover" : "telegram",
+                     it.attempts);
         removeAt(idx);
         persist();
     } else {

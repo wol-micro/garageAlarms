@@ -65,6 +65,30 @@
 #define NOTIFY_MIN_SEND_GAP_MS  350                  // stay under Telegram's rate limit
 
 // ---------------------------------------------------------------------------
+// Pushover (second delivery channel)
+// ---------------------------------------------------------------------------
+#define PUSHOVER_TIMEOUT_MS      8000
+#define PUSHOVER_REPLY_IDLE_MS   800
+
+// Priority 2 is emergency: Pushover repeats the alert until it is acknowledged and ignores
+// the phone's quiet hours. Both alarm types use it by choice — drop the motion one to 1 if
+// night-time movement in the garage starts waking you for nothing.
+#define PUSHOVER_PRIORITY_ALARM  2
+#define PUSHOVER_PRIORITY_MOTION 2
+#define PUSHOVER_RETRY_SEC       60      // >= 30 required by the API
+#define PUSHOVER_EXPIRE_SEC      3600    // <= 10800 required by the API
+#define PUSHOVER_SOUND_ALARM     "siren"
+#define PUSHOVER_SOUND_MOTION    "echo"
+
+// ---------------------------------------------------------------------------
+// Event journal (LittleFS on the reclaimed 12 MB)
+// ---------------------------------------------------------------------------
+#define JOURNAL_PATH         "/journal.log"
+#define JOURNAL_PREV_PATH    "/journal.1.log"
+#define JOURNAL_MAX_BYTES    (2UL * 1024 * 1024)   // rotate at 2 MB, keep one old file
+#define JOURNAL_TAIL_BYTES   1400                  // how much /log shows
+
+// ---------------------------------------------------------------------------
 // Housekeeping
 // ---------------------------------------------------------------------------
 // Silence is ambiguous for an alarm system: is it quiet, or is the box dead? A daily

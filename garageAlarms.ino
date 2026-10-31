@@ -19,6 +19,8 @@
 #include "Events.h"
 #include "Notifier.h"
 #include "BotUI.h"
+#include "Journal.h"
+#include <LittleFS.h>
 #include "AppState.h"
 #include "src/AsyncTelegram2/AsyncTelegram2.h"
 
@@ -123,6 +125,7 @@ static void pollSensors()
     if (alarmInput.update()) {
         const int64_t ts = nowEpoch();
         Serial.println("[sensor] ALARM");
+        Journal::log("sensor", "ALARM");
         Store::noteAlarm(ts);
         Notifier::broadcast(EventType::AlarmSmoke, ts);
         g_alarmStartedTs    = ts;
@@ -131,6 +134,7 @@ static void pollSensors()
     if (motionInput.update()) {
         const int64_t ts = nowEpoch();
         Serial.println("[sensor] motion");
+        Journal::log("sensor", "motion");
         Store::noteMotion(ts);
         Notifier::broadcast(EventType::Motion, ts);
     }
@@ -186,8 +190,22 @@ void setup()
     Serial.println("\n=== garageAlarms ===");
 
     Store::begin();
+
+    // The journal is best-effort: if the volume will not mount, the alarm still runs.
+    if (LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
+        Journal::begin(LittleFS);
+        Serial.printf("[fs] littlefs %u/%u KB used\n",
+                      (unsigned)(LittleFS.usedBytes() / 1024),
+                      (unsigned)(LittleFS.totalBytes() / 1024));
+    } else {
+        Serial.println("[fs] littlefs mount failed, journal disabled");
+    }
+
     Net::begin();   // non-blocking: we never wait here for WiFi
     Store::noteResetReason(Net::resetReasonCode());
+    Journal::log("boot", "#%u reason=%s pins a=%d m=%d",
+                 Store::bootCount(), Net::resetReasonText(),
+                 digitalRead(PIN_ALARM), digitalRead(PIN_MOTION));
 
     alarmInput.begin(PIN_ALARM,  PIN_ALARM_ACTIVE_HIGH,  ALARM_DEBOUNCE_MS,  ALARM_COOLDOWN_MS);
     motionInput.begin(PIN_MOTION, PIN_MOTION_ACTIVE_HIGH, MOTION_DEBOUNCE_MS, MOTION_COOLDOWN_MS,

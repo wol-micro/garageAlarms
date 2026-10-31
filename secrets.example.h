@@ -16,3 +16,9 @@
 
 // Shared secret for /subscribe. Without it anyone who finds the bot can watch your garage.
 #define SUBSCRIBE_PIN   "change-me"
+
+// Pushover needs BOTH values. The user key is on the dashboard home page; the application
+// token comes from "Create an Application/API Token" there. Leave them as-is to disable the
+// Pushover channel entirely — Telegram keeps working on its own.
+#define PUSHOVER_TOKEN  "your-pushover-app-token"
+#define PUSHOVER_USER   "your-pushover-user-key"

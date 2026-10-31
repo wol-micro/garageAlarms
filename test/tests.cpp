@@ -9,6 +9,9 @@
 #include "Events.h"
 #include "Net.h"
 #include "Util.h"
+#include "Pushover.h"
+#include <vector>
+#include <string>
 #include "src/AsyncTelegram2/AsyncTelegram2.h"
 
 uint32_t   g_fakeMillis = 0;
@@ -17,6 +20,11 @@ int        g_pinState[64];
 NvsStore   g_nvs;
 FakeSerial Serial;
 FakeESP    ESP;
+
+extern std::vector<std::string> g_pushSent;
+extern bool g_pushConfigured;
+extern bool g_pushAccepts;
+extern int  g_pushLastPriority;
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond, what)                                                        \
@@ -44,6 +52,10 @@ static bool run(DebouncedInput &in, uint32_t ms)
 static void resetWorld(bool wipeFlash)
 {
     if (wipeFlash) g_nvs.wipe();
+    g_pushSent.clear();
+    g_pushConfigured = true;
+    g_pushAccepts    = true;
+    g_pushLastPriority = -99;
     g_fakeMillis = 0;
     g_fakeEpoch  = T0;
     for (int i = 0; i < 64; i++) g_pinState[i] = LOW;
@@ -153,6 +165,7 @@ static void testNotifierMuteGating()
     Store::begin();
     AsyncTelegram2 bot;
     Notifier::begin(&bot);
+    g_pushConfigured = false;   // this test is about the queue, not the fan-out
     Store::setMuteUntil(g_fakeEpoch + 3600);
 
     Notifier::broadcast(EventType::Motion, g_fakeEpoch);
@@ -175,6 +188,7 @@ static void testNotifierDelivery()
     Store::begin();
     AsyncTelegram2 bot;
     Notifier::begin(&bot);
+    g_pushConfigured = false;   // this test is about the queue, not the fan-out
 
     // Offline: the alert must be kept, not sent and not lost.
     test_setOnline(false);
@@ -210,6 +224,7 @@ static void testQueueSurvivesReboot()
     Store::begin();
     AsyncTelegram2 bot;
     Notifier::begin(&bot);
+    g_pushConfigured = false;   // this test is about the queue, not the fan-out
 
     test_setOnline(false);
     Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
@@ -238,6 +253,7 @@ static void testUnconfirmedSendIsNotDelivery()
     Store::begin();
     AsyncTelegram2 bot;
     Notifier::begin(&bot);
+    g_pushConfigured = false;   // this test is about the queue, not the fan-out
 
     bot.transportOk = true;
     bot.confirmOk   = false;          // weak link: written, never acknowledged
@@ -264,6 +280,7 @@ static void testNoSendWhileReplyOutstanding()
     Store::begin();
     AsyncTelegram2 bot;
     Notifier::begin(&bot);
+    g_pushConfigured = false;   // this test is about the queue, not the fan-out
 
     bot.waitingReply = true;
     Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
@@ -288,6 +305,78 @@ static void testMuteScreenText()
     String on = Events::muteScreen(true, T0 + 3600);
     CHECK(on.indexOf("тишина до") > -1,   "muted: says until when");
     CHECK(on.indexOf("не приходят") > -1, "muted: explains what is suppressed");
+}
+
+
+// ------------------------------------------------------------- pushover --
+static void testPushoverDuplicatesAlarms()
+{
+    section("Pushover: duplicates alarms, nothing else");
+
+    resetWorld(true);
+    Store::begin();
+    AsyncTelegram2 bot;
+    Notifier::begin(&bot);
+
+    // An alarm is queued for the Telegram subscriber *and* once for Pushover.
+    Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
+    CHECK(Notifier::pending() == 2, "smoke: queued for telegram and pushover");
+
+    for (int i = 0; i < 6; i++) { advance(1000); Notifier::loop(); }
+    CHECK(bot.delivered.size() == 1,  "smoke: telegram got it once");
+    CHECK(g_pushSent.size() == 1,     "smoke: pushover got it once");
+    CHECK(g_pushLastPriority == PUSHOVER_PRIORITY_ALARM, "smoke: sent at alarm priority");
+
+    // Motion is duplicated too.
+    resetWorld(false);
+    Notifier::broadcast(EventType::Motion, g_fakeEpoch);
+    CHECK(Notifier::pending() == 2, "motion: queued for both channels");
+    for (int i = 0; i < 6; i++) { advance(1000); Notifier::loop(); }
+    CHECK(g_pushLastPriority == PUSHOVER_PRIORITY_MOTION, "motion: sent at motion priority");
+
+    // Housekeeping events stay on Telegram.
+    resetWorld(false);
+    Notifier::broadcast(EventType::Heartbeat, g_fakeEpoch);
+    CHECK(Notifier::pending() == 1, "heartbeat: telegram only, no pushover copy");
+}
+
+static void testPushoverFailureDoesNotLoseTelegram()
+{
+    section("Pushover: one channel failing never costs the other");
+
+    resetWorld(true);
+    Store::begin();
+    AsyncTelegram2 bot;
+    Notifier::begin(&bot);
+
+    g_pushAccepts = false;                 // Pushover rejects everything
+    Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
+    for (int i = 0; i < 6; i++) { advance(2000); Notifier::loop(); }
+
+    CHECK(bot.delivered.size() == 1, "telegram still delivered");
+    CHECK(g_pushSent.empty(),        "pushover delivered nothing");
+    CHECK(Notifier::pending() == 1,  "the pushover copy stays queued for retry");
+
+    g_pushAccepts = true;
+    advance(400000); Notifier::loop();
+    CHECK(g_pushSent.size() == 1,   "pushover delivered once it recovers");
+    CHECK(Notifier::pending() == 0, "queue drains");
+}
+
+static void testPushoverUnconfigured()
+{
+    section("Pushover: absent credentials change nothing");
+
+    resetWorld(true);
+    Store::begin();
+    AsyncTelegram2 bot;
+    Notifier::begin(&bot);
+
+    g_pushConfigured = false;
+    Notifier::broadcast(EventType::AlarmSmoke, g_fakeEpoch);
+    CHECK(Notifier::pending() == 1, "no pushover copy is queued");
+    for (int i = 0; i < 4; i++) { advance(1000); Notifier::loop(); }
+    CHECK(bot.delivered.size() == 1, "telegram unaffected");
 }
 
 // ------------------------------------------------- /mute command parsing --
@@ -316,6 +405,9 @@ int main()
     testUnconfirmedSendIsNotDelivery();
     testNoSendWhileReplyOutstanding();
     testMuteScreenText();
+    testPushoverDuplicatesAlarms();
+    testPushoverFailureDoesNotLoseTelegram();
+    testPushoverUnconfigured();
     testMuteParsing();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

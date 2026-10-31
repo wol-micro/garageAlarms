@@ -2,6 +2,7 @@
 #include "config.h"
 #include "secrets.h"
 #include "Util.h"
+#include "Journal.h"
 #include <WiFi.h>
 #include <esp_system.h>
 #include <time.h>
@@ -82,6 +83,8 @@ void loop()
             g_offlineSinceMs = 0;
             Serial.printf("[net] online, ip=%s rssi=%d\n",
                           WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            Journal::log("net", "online ip=%s rssi=%d",
+                         WiFi.localIP().toString().c_str(), WiFi.RSSI());
             // NTP must be (re)configured once we actually have a link.
             if (!g_timeConfigured) {
                 configTzTime(TZ_INFO, NTP_SERVER_1, NTP_SERVER_2);
@@ -91,6 +94,7 @@ void loop()
     } else {
         if (g_state == State::Online) {
             Serial.println("[net] link lost");
+            Journal::log("net", "link lost");
             g_offlineSinceMs = now;
         }
         if (g_offlineSinceMs == 0)

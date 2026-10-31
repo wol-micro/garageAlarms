@@ -5,6 +5,8 @@
 #include "Events.h"
 #include "Notifier.h"
 #include "AppState.h"
+#include "Journal.h"
+#include <LittleFS.h>
 #include "config.h"
 #include "secrets.h"
 #include "src/AsyncTelegram2/AsyncTelegram2.h"
@@ -15,7 +17,7 @@ namespace {
 AsyncTelegram2 *g_bot = nullptr;
 
 // Bump whenever the command list below changes, so it gets re-registered once.
-const uint32_t MENU_VERSION = 3;
+const uint32_t MENU_VERSION = 4;
 
 bool g_menuChecked = false;
 
@@ -139,7 +141,9 @@ String txtStatus()
     s += " <i>(доставлено " + String(Notifier::deliveredCount());
     s += ", потеряно " + String(Notifier::droppedCount()) + ")</i>\n";
 
-    s += "💾 Память: " + String(ESP.getFreeHeap() / 1024) + " КБ свободно";
+    s += "💾 Память: " + String(ESP.getFreeHeap() / 1024) + " КБ свободно\n";
+    s += "📒 Журнал: " + String(Journal::size() / 1024) + " КБ из "
+       + String((unsigned)(LittleFS.totalBytes() / 1024 / 1024)) + " МБ тома";
     return s;
 }
 
@@ -156,6 +160,7 @@ String txtHelp(int64_t chatId)
     if (isOwner(chatId)) {
         s += "\n<b>Только для владельца:</b>\n";
         s += "/who — список подписчиков\n";
+        s += "/log — последние записи журнала\n";
         s += "/reboot — перезагрузить контроллер\n";
     }
     s += "\n🚨 <i>Тревога о дыме приходит всегда, режим тишины на неё не влияет.</i>";
@@ -334,6 +339,16 @@ void handleText(const TBMessage &msg)
         else
             g_bot->sendMessage(msg, "⚠️ Владельца отписать нельзя.");
     }
+    else if (t == "/log") {
+        if (isOwner(msg.chatId)) {
+            String body = "📒 <b>Журнал</b> (последние записи)\n\n<pre>";
+            body += Util::htmlEscape(Journal::tail(JOURNAL_TAIL_BYTES));
+            body += "</pre>";
+            g_bot->sendMessage(msg, body);
+        } else {
+            g_bot->sendMessage(msg, "⛔️ Только для владельца.");
+        }
+    }
     else if (t == "/who") {
         if (isOwner(msg.chatId)) show(msg, txtWho(), kbJustBack());
         else                     g_bot->sendMessage(msg, "⛔️ Только для владельца.");
@@ -368,6 +383,7 @@ void ensureCommandMenu()
     g_bot->setMyCommands("unmute",      "Включить уведомления");
     g_bot->setMyCommands("test",        "Проверить доставку");
     g_bot->setMyCommands("help",        "Справка");
+    g_bot->setMyCommands("log",         "Журнал событий");
     g_bot->setMyCommands("unsubscribe", "Отписаться от тревог");
 
     Store::setMenuVersion(MENU_VERSION);

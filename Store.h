@@ -13,12 +13,19 @@ struct Subscriber {
 // One queued outbound notification. Self-contained on purpose: the whole queue is
 // persisted as a blob, so an alarm raised seconds before a brownout still gets delivered
 // after the reboot.
+// Delivery channels. The value lives in the byte that used to be padding, so sizeof stays
+// 24 and a queue persisted by an older build still passes the size check on load — its zero
+// byte reads back as CHANNEL_TELEGRAM, which is what those items were.
+#define CHANNEL_TELEGRAM 0
+#define CHANNEL_PUSHOVER 1
+
 struct QueueItem {
-    int64_t  chatId;
+    int64_t  chatId;        // Telegram chat; unused (0) for Pushover
     int64_t  eventTs;       // unix time of the event, not of the send attempt
     uint8_t  type;          // EventType
     uint8_t  attempts;
-    uint16_t reserved;
+    uint8_t  channel;       // CHANNEL_*
+    uint8_t  reserved;
     uint32_t nextAttemptMs; // millis-based, recomputed after a reboot
 };
 

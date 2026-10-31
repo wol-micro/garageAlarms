@@ -27,6 +27,13 @@ String muteScreen(bool muted, int64_t until);
 // Short label for logs and /status.
 const char *name(EventType type);
 
+// One-line headline, used as the Pushover notification title.
+const char *title(EventType type);
+
+// Which events are duplicated to Pushover: the two the user actually cares about waking up
+// for. Everything else (boot notices, heartbeat, /test) stays on Telegram only.
+bool goesToPushover(EventType type);
+
 // Alarms ignore mute; informational events do not.
 bool isCritical(EventType type);
 

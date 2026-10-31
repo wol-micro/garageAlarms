@@ -21,6 +21,28 @@ const char *name(EventType type)
     }
 }
 
+const char *title(EventType type)
+{
+    switch (type) {
+        case EventType::AlarmSmoke:     return "🚨 ТРЕВОГА — ДЫМ";
+        case EventType::AlarmOngoing:   return "🚨 Тревога продолжается";
+        case EventType::Motion:         return "👁 Движение в гараже";
+        case EventType::SensorStuck:    return "⚠️ Датчик движения неисправен";
+        case EventType::BootUnexpected: return "⚠️ Контроллер перезагрузился";
+        case EventType::BootCold:       return "🟢 Система на связи";
+        case EventType::Heartbeat:      return "💚 Всё спокойно";
+        case EventType::Test:           return "🧪 Тест";
+        default:                        return "Garage";
+    }
+}
+
+bool goesToPushover(EventType type)
+{
+    return type == EventType::AlarmSmoke
+        || type == EventType::AlarmOngoing
+        || type == EventType::Motion;
+}
+
 bool isCritical(EventType type)
 {
     return type == EventType::AlarmSmoke
